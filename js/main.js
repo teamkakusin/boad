@@ -1,11 +1,14 @@
 /**
- * Main Application
- * UIの制御とイベントハンドラーを管理
+ * Enhanced Main Application
+ * ラジオ詳細ページ、スレッドチャット、ホスト機能を拡張
  */
 
 class App {
     constructor() {
         this.currentPage = 'home';
+        this.currentRadioId = null;
+        this.currentThreadId = null;
+        this.micEnabled = false;
         this.init();
     }
 
@@ -256,6 +259,8 @@ class App {
             this.showAlert(result.message, 'success');
             document.getElementById('createRadioForm').reset();
             this.renderRadioPage();
+            // ホストしているラジオの詳細ページを表示
+            this.viewRadioDetail(result.radio.id);
         } else {
             this.showAlert(result.message, 'error');
         }
@@ -282,6 +287,8 @@ class App {
             this.showAlert(result.message, 'success');
             document.getElementById('threadForm').reset();
             this.renderBoardPage();
+            // スレッドのチャット画面を表示
+            this.openThreadChat(result.thread.id);
         } else {
             this.showAlert(result.message, 'error');
         }
@@ -300,7 +307,7 @@ class App {
         }
 
         radioList.innerHTML = liveRadios.map(radio => `
-            <div class="radio-card" onclick="app.viewRadio('${radio.id}')">
+            <div class="radio-card" onclick="app.viewRadioDetail('${radio.id}')">
                 <div class="radio-header">
                     <div class="radio-title">${this.escapeHtml(radio.title)}</div>
                     <div class="radio-host">${this.escapeHtml(radio.hostName)}がホスト中</div>
@@ -320,14 +327,9 @@ class App {
     }
 
     /**
-     * ラジオを表示
+     * ラジオ詳細ページを表示
      */
-    viewRadio(radioId) {
-        if (!authManager.isLoggedIn()) {
-            this.openLoginModal();
-            return;
-        }
-
+    viewRadioDetail(radioId) {
         const radio = radioManager.getRadio(radioId);
         if (!radio) {
             this.showAlert('ラジオが見つかりません', 'error');
@@ -335,38 +337,69 @@ class App {
         }
 
         // リスナーを追加
-        radioManager.addListener(radioId, authManager.currentUser.id);
+        if (authManager.isLoggedIn()) {
+            radioManager.addListener(radioId, authManager.currentUser.id);
+        }
 
-        // ラジオ詳細ページへのモーダルを表示
+        const isHost = authManager.isLoggedIn() && authManager.currentUser.id === radio.hostId;
+
         const html = `
-            <div class="modal" id="radioDetailModal">
-                <div class="modal-content">
+            <div class="modal active" id="radioDetailModal">
+                <div class="modal-content" style="width: 90%; max-width: 900px; height: 80vh; display: flex; flex-direction: column;">
                     <button class="close-btn" onclick="document.getElementById('radioDetailModal').remove()">&times;</button>
-                    <h2>${this.escapeHtml(radio.title)}</h2>
-                    <p><strong>ホスト:</strong> ${this.escapeHtml(radio.hostName)}</p>
-                    <p><strong>リスナー数:</strong> ${radio.listeners}人</p>
-                    <p><strong>説明:</strong></p>
-                    <p>${this.escapeHtml(radio.description)}</p>
                     
-                    <div class="comments-section">
-                        <h3>コメント</h3>
-                        <form onsubmit="app.handleAddRadioComment(event, '${radioId}')">
-                            <div class="form-group">
-                                <input type="text" placeholder="コメントを入力..." required>
-                                <button type="submit" class="btn btn-primary">コメント送信</button>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <div>
+                            <h2>${this.escapeHtml(radio.title)}</h2>
+                            <p style="color: #6b7280;"><strong>ホスト:</strong> ${this.escapeHtml(radio.hostName)}</p>
+                            <p style="color: #6b7280;"><strong>リスナー数:</strong> ${radio.listeners}人</p>
+                        </div>
+                        <div>
+                            <span class="status-badge status-live">🔴 LIVE</span>
+                        </div>
+                    </div>
+
+                    ${isHost ? `
+                        <div class="card" style="margin-bottom: 1rem;">
+                            <h3>ホスト操作</h3>
+                            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                                <button class="btn ${this.micEnabled ? 'btn-secondary' : 'btn-primary'}" onclick="app.toggleMic('${radioId}')">
+                                    🎤 ${this.micEnabled ? 'マイク オン' : 'マイク オフ'}
+                                </button>
+                                <button class="btn btn-danger" onclick="app.endRadio('${radioId}')">
+                                    ⏹️ 配信を終了
+                                </button>
+                                <button class="btn btn-danger" onclick="app.deleteRadio('${radioId}')">
+                                    🗑️ ラジオを削除
+                                </button>
                             </div>
-                        </form>
-                        <div id="radioComments">
-                            ${radio.comments.map(comment => `
+                        </div>
+                    ` : ''}
+
+                    <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                        <h3>コメント</h3>
+                        <div id="radioComments" style="flex: 1; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; padding: 1rem; margin-bottom: 1rem;">
+                            ${radio.comments.length === 0 ? '<p style="text-align: center; color: #6b7280;">コメントがまだありません</p>' : radio.comments.map(comment => `
                                 <div class="comment">
                                     <div class="comment-header">
                                         <span class="comment-author">${authManager.getUser(comment.userId).profile.avatar} ${this.escapeHtml(comment.userName)}</span>
                                         <span class="comment-time">${commentUtils.formatTime(comment.createdAt)}</span>
                                     </div>
                                     <div class="comment-content">${this.escapeHtml(comment.content)}</div>
+                                    <div class="comment-actions">
+                                        <button class="comment-action-btn like-btn" onclick="app.likeRadioComment('${radioId}', '${comment.id}')">👍 ${comment.likes || 0}</button>
+                                        ${isHost ? `<button class="comment-action-btn delete-btn" onclick="app.deleteRadioComment('${radioId}', '${comment.id}')">削除</button>` : ''}
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
+
+                        ${authManager.isLoggedIn() ? `
+                            <form onsubmit="app.handleAddRadioComment(event, '${radioId}')" style="display: flex; gap: 0.5rem;">
+                                <input type="text" placeholder="コメントを入力..." required style="flex: 1; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: 4px;">
+                                <button type="submit" class="btn btn-primary">送信</button>
+                            </form>
+                        ` : '<p style="text-align: center; color: #6b7280;">コメントするにはログインしてください</p>'}
                     </div>
                 </div>
             </div>
@@ -376,7 +409,47 @@ class App {
     }
 
     /**
-     * ラジオコメント追加処理
+     * マイクのオンオフを切り替え
+     */
+    toggleMic(radioId) {
+        this.micEnabled = !this.micEnabled;
+        this.showAlert(`マイクが${this.micEnabled ? 'オン' : 'オフ'}になりました`, 'success');
+        
+        // ページを再描画
+        document.getElementById('radioDetailModal').remove();
+        this.viewRadioDetail(radioId);
+    }
+
+    /**
+     * ラジオ配信を終了
+     */
+    endRadio(radioId) {
+        if (confirm('配信を終了しますか？')) {
+            const result = radioManager.endRadio(radioId);
+            if (result.success) {
+                this.showAlert(result.message, 'success');
+                document.getElementById('radioDetailModal').remove();
+                this.renderRadioPage();
+            }
+        }
+    }
+
+    /**
+     * ラジオを削除
+     */
+    deleteRadio(radioId) {
+        if (confirm('このラジオを削除しますか？この操作は取り消せません。')) {
+            const result = radioManager.deleteRadio(radioId);
+            if (result.success) {
+                this.showAlert(result.message, 'success');
+                document.getElementById('radioDetailModal').remove();
+                this.renderRadioPage();
+            }
+        }
+    }
+
+    /**
+     * ラジオコメントを追加
      */
     handleAddRadioComment(e, radioId) {
         e.preventDefault();
@@ -388,10 +461,35 @@ class App {
 
         if (result.success) {
             input.value = '';
-            this.viewRadio(radioId);
-            this.showAlert(result.message, 'success');
+            document.getElementById('radioDetailModal').remove();
+            this.viewRadioDetail(radioId);
         } else {
             this.showAlert(result.message, 'error');
+        }
+    }
+
+    /**
+     * ラジオコメントに「いいね」を追加
+     */
+    likeRadioComment(radioId, commentId) {
+        const result = radioManager.likeComment(radioId, commentId);
+        if (result.success) {
+            document.getElementById('radioDetailModal').remove();
+            this.viewRadioDetail(radioId);
+        }
+    }
+
+    /**
+     * ラジオコメントを削除
+     */
+    deleteRadioComment(radioId, commentId) {
+        if (confirm('このコメントを削除しますか？')) {
+            const result = radioManager.deleteComment(radioId, commentId);
+            if (result.success) {
+                this.showAlert(result.message, 'success');
+                document.getElementById('radioDetailModal').remove();
+                this.viewRadioDetail(radioId);
+            }
         }
     }
 
@@ -408,7 +506,7 @@ class App {
         }
 
         threadList.innerHTML = threads.map(thread => `
-            <div class="thread-item" onclick="app.viewThread('${thread.id}')">
+            <div class="thread-item" onclick="app.openThreadChat('${thread.id}')">
                 <div class="thread-header">
                     <div class="thread-title">${this.escapeHtml(thread.title)}</div>
                     <span class="thread-category">${this.getCategoryEmoji(thread.category)} ${thread.category}</span>
@@ -428,98 +526,74 @@ class App {
     }
 
     /**
-     * スレッドを表示
+     * スレッドのチャット画面を開く
      */
-    viewThread(threadId) {
+    openThreadChat(threadId) {
         const thread = boardManager.getThread(threadId);
         if (!thread) {
             this.showAlert('スレッドが見つかりません', 'error');
             return;
         }
 
+        this.currentThreadId = threadId;
+
         const html = `
-            <div class="modal active" id="threadDetailModal">
-                <div class="modal-content">
-                    <button class="close-btn" onclick="document.getElementById('threadDetailModal').remove()">&times;</button>
-                    <div class="thread-header">
-                        <div>
-                            <h2>${this.escapeHtml(thread.title)}</h2>
-                            <div class="thread-meta">
-                                ${authManager.getUser(thread.userId).profile.avatar} ${this.escapeHtml(thread.userName)} 
-                                | ${commentUtils.formatTime(thread.createdAt)}
+            <div class="modal active" id="threadChatModal">
+                <div class="modal-content" style="width: 90%; max-width: 800px; height: 80vh; display: flex; flex-direction: column;">
+                    <button class="close-btn" onclick="document.getElementById('threadChatModal').remove()">&times;</button>
+                    
+                    <div style="border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h2 style="margin: 0;">${this.escapeHtml(thread.title)}</h2>
+                                <p style="color: #6b7280; margin: 0.5rem 0 0 0;">
+                                    ${authManager.getUser(thread.userId).profile.avatar} ${this.escapeHtml(thread.userName)}
+                                </p>
                             </div>
+                            <span class="thread-category">${this.getCategoryEmoji(thread.category)} ${thread.category}</span>
                         </div>
-                        <span class="thread-category">${this.getCategoryEmoji(thread.category)} ${thread.category}</span>
-                    </div>
-                    <div class="thread-content" style="padding: 1rem 0;">
-                        ${this.escapeHtml(thread.content)}
-                    </div>
-                    <div class="thread-stats">
-                        <button class="like-btn" onclick="app.likeThread('${thread.id}')">👍 ${thread.likes}</button>
-                        <span>💬 ${thread.replies.length}件の返信</span>
-                        <span>👁️ ${thread.views}回表示</span>
+                        <p style="color: #6b7280; margin: 0.5rem 0 0 0;">${this.escapeHtml(thread.content)}</p>
                     </div>
 
-                    <div class="comments-section">
-                        <h3>返信</h3>
-                        ${authManager.isLoggedIn() ? `
-                            <form onsubmit="app.handleAddReply(event, '${threadId}')">
-                                <div class="form-group">
-                                    <textarea placeholder="返信を入力..." rows="3" required></textarea>
-                                    <button type="submit" class="btn btn-primary">返信送信</button>
+                    <div id="threadChat" style="flex: 1; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; padding: 1rem; margin-bottom: 1rem;">
+                        ${thread.replies.length === 0 ? '<p style="text-align: center; color: #6b7280;">返信がまだありません</p>' : thread.replies.map((reply, index) => `
+                            <div class="comment" data-reply-id="${reply.id}">
+                                <div class="comment-header">
+                                    <span class="comment-author">${authManager.getUser(reply.userId).profile.avatar} ${this.escapeHtml(reply.userName)}</span>
+                                    <span class="comment-time">${commentUtils.formatTime(reply.createdAt)}</span>
                                 </div>
-                            </form>
-                        ` : ''}
-                        <div id="threadReplies">
-                            ${thread.replies.length === 0 ? '<p style="text-align: center; color: #6b7280;">まだ返信がありません</p>' : thread.replies.map(reply => `
-                                <div class="comment">
-                                    <div class="comment-header">
-                                        <span class="comment-author">${authManager.getUser(reply.userId).profile.avatar} ${this.escapeHtml(reply.userName)}</span>
-                                        <span class="comment-time">${commentUtils.formatTime(reply.createdAt)}</span>
-                                    </div>
-                                    <div class="comment-content">${this.escapeHtml(reply.content)}</div>
-                                    <div class="comment-actions">
-                                        <button class="comment-action-btn" onclick="app.likeReply('${threadId}', '${reply.id}')">👍 ${reply.likes}</button>
-                                    </div>
+                                <div class="comment-content">${this.escapeHtml(reply.content)}</div>
+                                <div class="comment-actions">
+                                    <button class="comment-action-btn like-btn" onclick="app.likeThreadReply('${threadId}', '${reply.id}')">👍 ${reply.likes || 0}</button>
+                                    ${authManager.isLoggedIn() && authManager.currentUser.id === reply.userId ? `<button class="comment-action-btn delete-btn" onclick="app.deleteThreadReply('${threadId}', '${reply.id}')">削除</button>` : ''}
                                 </div>
-                            `).join('')}
-                        </div>
+                            </div>
+                        `).join('')}
                     </div>
+
+                    ${authManager.isLoggedIn() ? `
+                        <form onsubmit="app.handleAddThreadReply(event, '${threadId}')" style="display: flex; gap: 0.5rem; flex-direction: column;">
+                            <textarea placeholder="返信を入力..." rows="3" required style="padding: 0.75rem; border: 1px solid var(--border-color); border-radius: 4px; font-family: inherit;"></textarea>
+                            <button type="submit" class="btn btn-primary">返信を送信</button>
+                        </form>
+                    ` : '<p style="text-align: center; color: #6b7280;">返信するにはログインしてください</p>'}
                 </div>
             </div>
         `;
 
         document.body.insertAdjacentHTML('beforeend', html);
+
+        // チャットを自動スクロール
+        setTimeout(() => {
+            const chatDiv = document.getElementById('threadChat');
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }, 100);
     }
 
     /**
-     * スレッドに「いいね」を追加
+     * スレッド返信を追加
      */
-    likeThread(threadId) {
-        const result = boardManager.likeThread(threadId);
-        if (result.success) {
-            this.showAlert(result.message, 'success');
-            document.getElementById('threadDetailModal').remove();
-            this.viewThread(threadId);
-        }
-    }
-
-    /**
-     * 返信に「いいね」を追加
-     */
-    likeReply(threadId, replyId) {
-        const result = boardManager.likeReply(threadId, replyId);
-        if (result.success) {
-            this.showAlert(result.message, 'success');
-            document.getElementById('threadDetailModal').remove();
-            this.viewThread(threadId);
-        }
-    }
-
-    /**
-     * 返信追加処理
-     */
-    handleAddReply(e, threadId) {
+    handleAddThreadReply(e, threadId) {
         e.preventDefault();
 
         const textarea = e.target.querySelector('textarea');
@@ -529,11 +603,36 @@ class App {
 
         if (result.success) {
             textarea.value = '';
-            document.getElementById('threadDetailModal').remove();
-            this.viewThread(threadId);
-            this.showAlert(result.message, 'success');
+            document.getElementById('threadChatModal').remove();
+            this.openThreadChat(threadId);
         } else {
             this.showAlert(result.message, 'error');
+        }
+    }
+
+    /**
+     * スレッド返信に「いいね」を追加
+     */
+    likeThreadReply(threadId, replyId) {
+        const result = boardManager.likeReply(threadId, replyId);
+        if (result.success) {
+            this.showAlert(result.message, 'success');
+            document.getElementById('threadChatModal').remove();
+            this.openThreadChat(threadId);
+        }
+    }
+
+    /**
+     * スレッド返信を削除
+     */
+    deleteThreadReply(threadId, replyId) {
+        if (confirm('この返信を削除しますか？')) {
+            const result = boardManager.deleteReply(threadId, replyId);
+            if (result.success) {
+                this.showAlert(result.message, 'success');
+                document.getElementById('threadChatModal').remove();
+                this.openThreadChat(threadId);
+            }
         }
     }
 
@@ -553,7 +652,10 @@ class App {
                 <div class="profile-avatar">${user.profile.avatar}</div>
                 <div class="profile-info">
                     <h3>${this.escapeHtml(user.id)}</h3>
-                    <p>${this.escapeHtml(user.profile.bio || 'プロフィール情報がありません')}</p>
+                    <p><strong>名前:</strong> ${this.escapeHtml(user.profile.displayName || '未設定')}</p>
+                    <p><strong>自己紹介:</strong> ${this.escapeHtml(user.profile.bio || 'プロフィール情報がありません')}</p>
+                    <p><strong>場所:</strong> ${this.escapeHtml(user.profile.location || '未設定')}</p>
+                    <p><strong>ウェブサイト:</strong> ${user.profile.website ? `<a href="${this.escapeHtml(user.profile.website)}" target="_blank">${this.escapeHtml(user.profile.website)}</a>` : '未設定'}</p>
                     <button class="btn btn-primary" onclick="app.editProfile()">プロフィールを編集</button>
                 </div>
             </div>
@@ -574,8 +676,10 @@ class App {
             </div>
 
             <div class="card">
-                <h3>アカウント情報</h3>
+                <h3>セキュリティ設定</h3>
                 <p><strong>アカウント作成日:</strong> ${new Date(user.createdAt).toLocaleDateString('ja-JP')}</p>
+                <button class="btn btn-secondary" onclick="app.changePassword()">パスワードを変更</button>
+                <button class="btn btn-danger" onclick="app.deleteAccount()" style="margin-left: 1rem;">アカウントを削除</button>
             </div>
         `;
     }
@@ -584,11 +688,101 @@ class App {
      * プロフィール編集
      */
     editProfile() {
-        const bio = prompt('プロフィール情報を入力してください:', authManager.currentUser.profile.bio);
-        if (bio !== null) {
-            authManager.updateProfile(bio);
-            this.showAlert('プロフィールを更新しました', 'success');
-            this.renderProfilePage();
+        const user = authManager.currentUser;
+
+        const html = `
+            <div class="modal active" id="editProfileModal">
+                <div class="modal-content">
+                    <button class="close-btn" onclick="document.getElementById('editProfileModal').remove()">&times;</button>
+                    <h2>プロフィール編集</h2>
+                    <form onsubmit="app.handleProfileUpdate(event)">
+                        <div class="form-group">
+                            <label>表示名</label>
+                            <input type="text" id="profileDisplayName" value="${this.escapeHtml(user.profile.displayName || '')}">
+                        </div>
+                        <div class="form-group">
+                            <label>自己紹介</label>
+                            <textarea id="profileBio" rows="3">${this.escapeHtml(user.profile.bio || '')}</textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>場所</label>
+                            <input type="text" id="profileLocation" value="${this.escapeHtml(user.profile.location || '')}">
+                        </div>
+                        <div class="form-group">
+                            <label>ウェブサイト</label>
+                            <input type="url" id="profileWebsite" value="${this.escapeHtml(user.profile.website || '')}">
+                        </div>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </form>
+                </div>
+            </div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', html);
+    }
+
+    /**
+     * プロフィール更新処理
+     */
+    handleProfileUpdate(e) {
+        e.preventDefault();
+
+        const displayName = document.getElementById('profileDisplayName').value;
+        const bio = document.getElementById('profileBio').value;
+        const location = document.getElementById('profileLocation').value;
+        const website = document.getElementById('profileWebsite').value;
+
+        authManager.updateProfileInfo({
+            displayName,
+            bio,
+            location,
+            website
+        });
+
+        this.showAlert('プロフィールを更新しました', 'success');
+        document.getElementById('editProfileModal').remove();
+        this.renderProfilePage();
+    }
+
+    /**
+     * パスワード変更
+     */
+    changePassword() {
+        const oldPassword = prompt('現在のパスワードを入力してください:');
+        if (!oldPassword) return;
+
+        if (!authManager.verifyPassword(oldPassword, authManager.currentUser.passwordHash)) {
+            this.showAlert('パスワードが正しくありません', 'error');
+            return;
+        }
+
+        const newPassword = prompt('新しいパスワードを入力してください:');
+        if (!newPassword || newPassword.length < 6) {
+            this.showAlert('パスワードは6文字以上である必要があります', 'error');
+            return;
+        }
+
+        const confirm = prompt('新しいパスワードを再度入力してください:');
+        if (newPassword !== confirm) {
+            this.showAlert('パスワードが一致しません', 'error');
+            return;
+        }
+
+        authManager.changePassword(newPassword);
+        this.showAlert('パスワードを変更しました', 'success');
+    }
+
+    /**
+     * アカウント削除
+     */
+    deleteAccount() {
+        const confirmation = prompt('本当にアカウントを削除しますか？「削除」と入力して確認してください:');
+        if (confirmation === '削除') {
+            authManager.deleteAccount();
+            this.showAlert('アカウントを削除しました', 'success');
+            this.logout();
+        } else {
+            this.showAlert('アカウント削除がキャンセルされました', 'info');
         }
     }
 
