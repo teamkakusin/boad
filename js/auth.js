@@ -1,6 +1,7 @@
 /**
- * Authentication Module
+ * Enhanced Authentication Module
  * ユーザーの登録、ログイン、ログアウト機能を管理
+ * プロフィール情報の拡張設定に対応
  */
 
 class AuthManager {
@@ -42,7 +43,7 @@ class AuthManager {
         for (let i = 0; i < password.length; i++) {
             const char = password.charCodeAt(i);
             hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32bit integer
+            hash = hash & hash;
         }
         return Math.abs(hash).toString(16);
     }
@@ -93,8 +94,12 @@ class AuthManager {
             passwordHash: this.hashPassword(password),
             createdAt: new Date().toISOString(),
             profile: {
+                displayName: userId,
                 bio: '',
-                avatar: this.generateAvatar(userId)
+                location: '',
+                website: '',
+                avatar: this.generateAvatar(userId),
+                avatarEmoji: this.getRandomEmoji()
             },
             stats: {
                 radioHosted: 0,
@@ -170,7 +175,7 @@ class AuthManager {
     }
 
     /**
-     * アバターを生成
+     * アバター絵文字を生成
      */
     generateAvatar(userId) {
         const avatars = ['😺', '😸', '😹', '😻', '😼', '😽', '🐱'];
@@ -179,15 +184,28 @@ class AuthManager {
     }
 
     /**
-     * プロフィールを更新
+     * ランダムな絵文字を取得
      */
-    updateProfile(bio) {
+    getRandomEmoji() {
+        const emojis = ['😺', '😸', '😹', '😻', '😼', '😽', '🐱', '🦁', '🐯', '😸', '😻', '😽', '😼'];
+        return emojis[Math.floor(Math.random() * emojis.length)];
+    }
+
+    /**
+     * プロフィール情報を更新
+     */
+    updateProfileInfo(profileData) {
         if (!this.currentUser) return false;
 
         const users = this.getAllUsers();
         const user = users[this.currentUser.id];
         
-        user.profile.bio = bio;
+        if (profileData.displayName) user.profile.displayName = profileData.displayName;
+        if (profileData.bio !== undefined) user.profile.bio = profileData.bio;
+        if (profileData.location !== undefined) user.profile.location = profileData.location;
+        if (profileData.website !== undefined) user.profile.website = profileData.website;
+        if (profileData.avatarEmoji !== undefined) user.profile.avatarEmoji = profileData.avatarEmoji;
+
         user.updatedAt = new Date().toISOString();
 
         this.saveUsers(users);
@@ -227,6 +245,43 @@ class AuthManager {
     getUser(userId) {
         const users = this.getAllUsers();
         return users[userId] || null;
+    }
+
+    /**
+     * パスワードを変更
+     */
+    changePassword(oldPassword, newPassword) {
+        if (!this.currentUser) return false;
+
+        if (!this.verifyPassword(oldPassword, this.currentUser.passwordHash)) {
+            return false;
+        }
+
+        const users = this.getAllUsers();
+        const user = users[this.currentUser.id];
+        user.passwordHash = this.hashPassword(newPassword);
+
+        this.saveUsers(users);
+        this.currentUser = user;
+        localStorage.setItem(this.currentUserKey, JSON.stringify(user));
+
+        return true;
+    }
+
+    /**
+     * アカウントを削除
+     */
+    deleteAccount() {
+        if (!this.currentUser) return false;
+
+        const users = this.getAllUsers();
+        delete users[this.currentUser.id];
+
+        this.saveUsers(users);
+        this.currentUser = null;
+        localStorage.removeItem(this.currentUserKey);
+
+        return true;
     }
 }
 
